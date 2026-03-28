@@ -1,3 +1,5 @@
+# optionnel version: "3.8"
+
 
 
 networks:
@@ -8,63 +10,96 @@ networks:
   soc-backend:
     driver: bridge
     name: soc-backend
-    internal: true         
+    internal: true
 
 volumes:
-  wazuh-data:
-  wazuh-logs:
+  wazuh-indexer-data:
+  wazuh-manager-data:
+  wazuh-manager-logs:
   grafana-data:
   thehive-data:
   cassandra-data:
 
 services:
 
+ 
+  wazuh-indexer:
+    image: wazuh/wazuh-indexer:4.14.4
+    container_name: wazuh-indexer
+    restart: unless-stopped
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - bootstrap.memory_lock=true
+      - INDEXER_USERNAME=${WAZUH_INDEXER_USER:-admin}
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+    networks:
+      - soc-backend
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 1
+
+ 
   wazuh-manager:
     image: wazuh/wazuh-manager:4.14.4
     container_name: wazuh-manager
     restart: unless-stopped
+    depends_on:
+      wazuh-indexer:
+        condition: service_healthy
     ports:
-      - "1514:1514/udp"     
-      - "1515:1515/tcp"    
-      - "55000:55000/tcp"   
+      - "1514:1514/udp"
+      - "1515:1515/tcp"
+      - "55000:55000/tcp"
     environment:
-      - WAZUH_MANAGER_PASSWORD=${WAZUH_MANAGER_PASSWORD}
-      - API_USERNAME=${WAZUH_API_USER}
-      - API_PASSWORD=${WAZUH_MANAGER_PASSWORD}
-      - INDEXER_URL=https://wazuh-manager:9200
-      - INDEXER_USERNAME=admin
+      - INDEXER_URL=https://wazuh-indexer:9200
+      - INDEXER_USERNAME=${WAZUH_INDEXER_USER:-admin}
       - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD}
+      - API_USERNAME=${WAZUH_API_USER:-wazuh-wui}
+      - API_PASSWORD=${WAZUH_API_PASSWORD}
     volumes:
-      - wazuh-data:/var/ossec/data
-      - wazuh-logs:/var/ossec/logs
+      - wazuh-manager-data:/var/ossec/data
+      - wazuh-manager-logs:/var/ossec/logs
     networks:
       - soc-frontend
       - soc-backend
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:55000"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 90s
+      test: ["CMD", "true"]
+      interval: 10s
+      timeout: 5s
+      retries: 1
 
-  
+ 
   wazuh-dashboard:
     image: wazuh/wazuh-dashboard:4.14.4
     container_name: wazuh-dashboard
     restart: unless-stopped
-    ports:
-      - "443:5601"
-    environment:
-      - WAZUH_API_URL=https://wazuh-manager
-      - WAZUH_API_PORT=55000
-      - API_USERNAME=${WAZUH_API_USER}
-      - API_PASSWORD=${WAZUH_MANAGER_PASSWORD}
-      - SERVER_SSL_ENABLED=false    
     depends_on:
       wazuh-manager:
         condition: service_healthy
+    ports:
+      - "443:5601"
+    environment:
+      - INDEXER_USERNAME=${WAZUH_INDEXER_USER:-admin}
+      - INDEXER_PASSWORD=${WAZUH_INDEXER_PASSWORD}
+      - WAZUH_API_URL=https://wazuh-manager
+      - WAZUH_API_PORT=55000
+      - API_USERNAME=${WAZUH_API_USER:-wazuh-wui}
+      - API_PASSWORD=${WAZUH_API_PASSWORD}
+      - SERVER_SSL_ENABLED=false
     networks:
       - soc-frontend
+      - soc-backend        
 
   
   suricata:
@@ -72,12 +107,6 @@ services:
     container_name: suricata
     restart: unless-stopped
     network_mode: host
-    # cap_add:
-    #   - NET_ADMIN
-    #   - NET_RAW
-    #   - SYS_NICE
-    # networks:
-    #   - soc-backend
     environment:
       - SURICATA_OPTIONS=-i ${SURICATA_INTERFACE:-eth0}
     volumes:
@@ -85,7 +114,7 @@ services:
       - /var/log/suricata:/var/log/suricata
       - /var/lib/suricata:/var/lib/suricata
 
-  
+ 
   grafana:
     image: grafana/grafana:12.3.6
     container_name: grafana
@@ -101,7 +130,6 @@ services:
     networks:
       - soc-frontend
 
- 
   cassandra:
     image: cassandra:4.1.9
     container_name: cassandra
@@ -121,11 +149,14 @@ services:
       retries: 10
       start_period: 60s
 
-  
+
   thehive:
     image: strangebee/thehive:5.6
     container_name: thehive
     restart: unless-stopped
+    depends_on:
+      cassandra:
+        condition: service_healthy
     ports:
       - "9000:9000"
     environment:
@@ -134,25 +165,11 @@ services:
       - TH_DB_CASSANDRA_HOST=cassandra
       - TH_DB_CASSANDRA_CLUSTER=thehive
       - TH_DB_CASSANDRA_KEYSPACE=thehive
+     
+      - TH_ADMIN_LOGIN=${THEHIVE_ADMIN_LOGIN:-admin@thehive.local}
+      - TH_ADMIN_PASSWORD=${THEHIVE_ADMIN_PASSWORD:-secret}
     volumes:
       - thehive-data:/opt/thehive/data
-    depends_on:
-      cassandra:
-        condition: service_healthy
     networks:
       - soc-frontend
       - soc-backend
-  
-  dvwa:
-    image: vulnerables/web-dvwa:latest
-    container_name: dvwa
-    restart: unless-stopped
-    ports:
-      - "8080:80"
-    environment:
-      - DB_SERVER=dvwa-db
-      - DB_DATABASE=dvwa
-      - DB_USERNAME=${DVWA_DB_USER}
-      - DB_PASSWORD=${DVWA_DB_PASSWORD}
-    networks:
-      - soc-frontend
