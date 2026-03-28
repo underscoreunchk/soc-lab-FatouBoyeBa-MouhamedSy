@@ -40,7 +40,7 @@ Scan réseau (Nmap) → détecté par Wazuh
 Brute force SSH → alerte + blocage
 Injection SQL → détectée par Suricata
 Gestion d’incident via TheHive
-⚠️ Sécurité
+ Sécurité
 Aucun secret en dur
 Utilisation de .env
 .env ignoré via .gitignore
